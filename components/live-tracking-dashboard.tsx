@@ -45,7 +45,7 @@ export function LiveTrackingDashboard() {
       const [guestsData, cabinsData, wristbandsData] = await Promise.all([
         supabase.from("guests").select("*").order("created_at", { ascending: false }),
         supabase.from("yacht_cabins").select("*"),
-        supabase.from("wristbands").select("*").order("wristband_id"),
+        supabase.from("wristbands").select("*"),
       ])
       setAllGuests(guestsData.data || [])
       setAllCabins(cabinsData.data || [])
@@ -126,8 +126,34 @@ export function LiveTrackingDashboard() {
     }))
   })
   
+  // Custom sorting function for family wristbands
+  const sortFamilyWristbands = (wristbands: any[]) => {
+    const order = ['P1', 'P2', 'P3', 'P4', 'C1', 'C2']
+    
+    return wristbands.sort((a, b) => {
+      // Extract just the wristband ID part (before the space)
+      const aId = a.wristbandId.split(' ')[0]
+      const bId = b.wristbandId.split(' ')[0]
+      
+      const aIndex = order.indexOf(aId)
+      const bIndex = order.indexOf(bId)
+      
+      // If both are in the order array, sort by their position
+      if (aIndex !== -1 && bIndex !== -1) {
+        return aIndex - bIndex
+      }
+      
+      // If only one is in the order array, prioritize it
+      if (aIndex !== -1) return -1
+      if (bIndex !== -1) return 1
+      
+      // If neither is in the order array, sort alphabetically
+      return a.wristbandId.localeCompare(b.wristbandId)
+    })
+  }
+
   // Group online wristbands by type
-  const familyWristbands = onlineWristbands.filter((wb) => wb.group === 'Family')
+  const familyWristbands = sortFamilyWristbands(onlineWristbands.filter((wb) => wb.group === 'Family'))
   const guestWristbands = onlineWristbands.filter((wb) => wb.group === 'Guest')
   const testWristbands = onlineWristbands.filter((wb) => wb.group === 'Test')
 
@@ -225,7 +251,7 @@ export function LiveTrackingDashboard() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">
-              🛥️ Renaissance
+              Renaissance
             </h1>
             <p className="text-slate-400 mt-2">Real-time guest location and signal monitoring</p>
           </div>
