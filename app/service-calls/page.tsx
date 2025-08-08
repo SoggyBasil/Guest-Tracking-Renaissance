@@ -13,6 +13,115 @@ import { safeFormatDate, convertCustomDateToISO } from "@/lib/utils"
 import { supabase } from "@/lib/supabase-client"
 import { GuestProfilePopup } from "@/components/guest-profile-popup"
 
+// Cabin details popup component
+const CabinDetailsPopup = ({ 
+  cabinNumber, 
+  cabinName, 
+  guests, 
+  isOpen, 
+  onClose 
+}: { 
+  cabinNumber: string
+  cabinName: string
+  guests: any[]
+  isOpen: boolean
+  onClose: () => void 
+}) => {
+  if (!isOpen) return null
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-slate-800 border border-slate-700 rounded-lg max-w-md w-full max-h-[80vh] overflow-y-auto">
+        <div className="p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-bold text-white flex items-center gap-2">
+              <MapPin className="h-5 w-5 text-orange-400" />
+              Cabin Details
+            </h2>
+            <button
+              onClick={onClose}
+              className="text-slate-400 hover:text-white transition-colors"
+            >
+              <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <div className="space-y-4">
+            {/* Cabin Information */}
+            <div className="bg-slate-700/50 rounded-lg p-4">
+              <h3 className="text-lg font-semibold text-white mb-2">Cabin Information</h3>
+              <div className="space-y-2">
+                <div className="flex justify-between">
+                  <span className="text-slate-300">Cabin Number:</span>
+                  <span className="text-white font-medium">G{cabinNumber}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-300">Cabin Name:</span>
+                  <span className="text-white font-medium">{cabinName}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Assigned Guests */}
+            <div className="bg-slate-700/50 rounded-lg p-4">
+              <h3 className="text-lg font-semibold text-white mb-2 flex items-center gap-2">
+                <User className="h-4 w-4" />
+                Assigned Guests
+              </h3>
+              {guests.length > 0 ? (
+                <div className="space-y-3">
+                  {guests.map((guest, index) => (
+                    <div key={index} className="bg-slate-600/50 rounded p-3">
+                      <div className="font-medium text-white">{guest.name}</div>
+                      {guest.email && (
+                        <div className="text-sm text-slate-300">{guest.email}</div>
+                      )}
+                      {guest.phone && (
+                        <div className="text-sm text-slate-300">{guest.phone}</div>
+                      )}
+                      {guest.guest_type && (
+                        <div className="text-xs text-orange-400 mt-1">{guest.guest_type}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-slate-400 text-center py-4">
+                  <User className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                  <p>No guests currently assigned to this cabin</p>
+                </div>
+              )}
+            </div>
+
+            {/* Call Information */}
+            <div className="bg-slate-700/50 rounded-lg p-4">
+              <h3 className="text-lg font-semibold text-white mb-2 flex items-center gap-2">
+                <Phone className="h-4 w-4" />
+                Call Information
+              </h3>
+              <div className="text-slate-300 text-sm">
+                <p>This service call was made from a cabin device (G{cabinNumber}), not a guest wristband.</p>
+                <p className="mt-2">Cabin devices are typically used for general service requests from the cabin location.</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-6 flex justify-end">
+            <button
+              onClick={onClose}
+              className="px-4 py-2 bg-slate-600 hover:bg-slate-500 text-white rounded transition-colors"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // Enhanced service call interface with status and acknowledgment
 interface EnhancedServiceCall extends TraceITServiceItem {
   status: 'sentToRadios' | 'accepted' | 'expired'
@@ -39,6 +148,10 @@ export default function ServiceCallsPage() {
   const [guestAssignments, setGuestAssignments] = useState<any[]>([])
   const [selectedGuest, setSelectedGuest] = useState<any>(null)
   const [showGuestProfile, setShowGuestProfile] = useState(false)
+  const [showCabinDetails, setShowCabinDetails] = useState(false)
+  const [cabinNumberToShow, setCabinNumberToShow] = useState<string | null>(null)
+  const [cabinNameToShow, setCabinNameToShow] = useState<string | null>(null)
+  const [guestsForCabinDetails, setGuestsForCabinDetails] = useState<any[]>([])
 
   // Create a simple hash of the data to detect changes
   const createDataHash = (calls: TraceITServiceItem[]): string => {
@@ -69,9 +182,14 @@ export default function ServiceCallsPage() {
 
   // Extract cabin number from service call text
   const extractCabinFromCall = (callText: string): string | null => {
-    // Look for patterns like "GUEST CALL from G505" or "from 505"
-    const match = callText.match(/from\s+(?:G)?(\d{3,4})/i)
+    // Look for patterns like "GUEST CALL from G505" or "SERVICE CALL from G414"
+    const match = callText.match(/from\s+G(\d{3})/i)
     return match ? match[1] : null
+  }
+
+  // Check if a call is from a cabin device (G + 3 digits)
+  const isCabinCall = (callText: string): boolean => {
+    return /G\d{3}/i.test(callText)
   }
 
   // Get guest information for a wristband
@@ -104,10 +222,11 @@ export default function ServiceCallsPage() {
     return { guest, cabin }
   }
 
-  // Handle service call click to show guest information
-  const handleServiceCallClick = (call: EnhancedServiceCall) => {
-    // Check if this is a wristband call
-    if (call.wristbands && call.wristbands.length > 0) {
+     // Handle service call click to show guest information
+   const handleServiceCallClick = (call: EnhancedServiceCall) => {
+     // Only handle wristband calls - cabin calls should not have wristbands
+     const isCabinDeviceCall = isCabinCall(call.text)
+     if (!isCabinDeviceCall && call.wristbands && call.wristbands.length > 0) {
       const wristbandId = call.wristbands[0]
       const { guest, cabin } = getGuestForWristband(wristbandId)
       
@@ -137,6 +256,25 @@ export default function ServiceCallsPage() {
       }
     }
   }
+
+     // Handle cabin call click to show cabin information
+   const handleCabinCallClick = (cabinNumber: string, cabinName: string) => {
+     setCabinNumberToShow(cabinNumber)
+     setCabinNameToShow(cabinName)
+     
+     // Find guests assigned to this cabin
+     const guestsAssignedToCabin = allGuests.filter((g: any) => {
+       // Check if guest is assigned to this cabin through cabin assignments
+       const cabinAssignment = allCabins.find((c: any) => 
+         c.cabin_number === cabinNumber && 
+         (c.guest_id_1 === g.id || c.guest_id_2 === g.id)
+       )
+       return cabinAssignment !== undefined
+     })
+     
+     setGuestsForCabinDetails(guestsAssignedToCabin)
+     setShowCabinDetails(true)
+   }
 
   const load = async (forceRefresh = false) => {
     const now = Date.now()
@@ -472,11 +610,14 @@ export default function ServiceCallsPage() {
                   <p>No service calls found</p>
                 </div>
               ) : (
-                filtered.map((call, index) => {
-                  // Check if this is a wristband call or a cabin call
-                  const isWristbandCall = call.wristbands && call.wristbands.length > 0
-                  const cabinNumber = extractCabinFromCall(call.text)
-                  const cabinName = cabinNumber ? getCabinName(cabinNumber) : null
+                                 filtered.map((call, index) => {
+                   // Check if this is a cabin call first (priority over wristband detection)
+                   const isCabinDeviceCall = isCabinCall(call.text)
+                   const cabinNumber = extractCabinFromCall(call.text)
+                   const cabinName = cabinNumber ? getCabinName(cabinNumber) : null
+                   
+                   // Only consider it a wristband call if it's NOT a cabin call AND has wristbands
+                   const isWristbandCall = !isCabinDeviceCall && call.wristbands && call.wristbands.length > 0
                   
                   return (
                     <div
@@ -485,8 +626,14 @@ export default function ServiceCallsPage() {
                         call.status === 'accepted' || call.status === 'expired'
                           ? 'bg-green-900/20 border-green-500/50'
                           : 'bg-red-900/20 border-red-500/50 hover:bg-red-900/30'
-                      } ${isWristbandCall ? 'cursor-pointer' : ''}`}
-                      onClick={() => isWristbandCall && handleServiceCallClick(call)}
+                      } ${(isWristbandCall || isCabinDeviceCall) ? 'cursor-pointer' : ''}`}
+                      onClick={() => {
+                        if (isWristbandCall) {
+                          handleServiceCallClick(call)
+                        } else if (isCabinDeviceCall && cabinNumber) {
+                          handleCabinCallClick(cabinNumber, cabinName || `G${cabinNumber}`)
+                        }
+                      }}
                     >
                     <div className="flex items-start justify-between mb-3">
                       <div className="flex items-center gap-3">
@@ -517,18 +664,29 @@ export default function ServiceCallsPage() {
                             <span className="text-sm text-slate-300">
                               Wristbands: {call.wristbands.join(', ')}
                             </span>
-                            {isWristbandCall && (
-                              <Badge variant="outline" className="border-blue-400 text-blue-400 text-xs">
-                                Click to view guest
-                              </Badge>
-                            )}
+                            <Badge variant="outline" className="border-blue-400 text-blue-400 text-xs">
+                              Click to view guest
+                            </Badge>
                           </div>
-                        ) : cabinName ? (
+                        ) : isCabinDeviceCall && cabinName ? (
                           <div className="flex items-center gap-2">
                             <MapPin className="h-4 w-4 text-orange-400" />
                             <span className="text-sm text-slate-300">
-                              Location: {cabinName}
+                              Cabin: {cabinName}
                             </span>
+                            <Badge variant="outline" className="border-orange-400 text-orange-400 text-xs">
+                              Click to view cabin
+                            </Badge>
+                          </div>
+                        ) : isCabinDeviceCall ? (
+                          <div className="flex items-center gap-2">
+                            <MapPin className="h-4 w-4 text-orange-400" />
+                            <span className="text-sm text-slate-300">
+                              Cabin Device: G{cabinNumber}
+                            </span>
+                            <Badge variant="outline" className="border-orange-400 text-orange-400 text-xs">
+                              Click to view cabin
+                            </Badge>
                           </div>
                         ) : (
                           <div className="flex items-center gap-2">
@@ -606,6 +764,15 @@ export default function ServiceCallsPage() {
             setShowGuestProfile(false)
             setSelectedGuest(null)
           }}
+        />
+
+        {/* Cabin Details Popup */}
+        <CabinDetailsPopup
+          cabinNumber={cabinNumberToShow || ''}
+          cabinName={cabinNameToShow || ''}
+          guests={guestsForCabinDetails}
+          isOpen={showCabinDetails}
+          onClose={() => setShowCabinDetails(false)}
         />
       </div>
     </div>
