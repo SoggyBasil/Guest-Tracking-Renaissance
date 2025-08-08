@@ -156,7 +156,12 @@ export function GuestProfilePopup({ isOpen, onClose, guest, wristband }: GuestPr
               Wristband ID: <span className="text-gray-400">{wristband.wristband_id}</span>
             </p>
             <p className="text-xs text-gray-500">
-              Last Updated: <span className="text-gray-400">{new Date().toLocaleTimeString()}</span>
+                              Last Updated: <span className="text-gray-400">{new Date().toLocaleTimeString('en-US', { 
+                  hour12: false,
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  second: '2-digit'
+                })}</span>
             </p>
           </div>
         </div>

@@ -108,6 +108,33 @@ export function CabinAssignmentDialog({
             wristbandIds = [`G1-${cabin?.cabin_number}`, `G2-${cabin?.cabin_number}`]
         }
 
+        // Expand IDs to include both hyphen and space variations and owner short codes without names
+        const expandedIds = new Set<string>()
+        for (const id of wristbandIds) {
+          expandedIds.add(id)
+          // If it's a guest/staff pattern with hyphen, add space variant (e.g., G1-411 -> G1 411)
+          if (/^G[12]-\d+$/.test(id)) {
+            expandedIds.add(id.replace('-', ' '))
+          }
+          // If it's a guest/staff pattern with space, add hyphen variant (e.g., G1 411 -> G1-411)
+          if (/^G[12] \d+$/.test(id)) {
+            expandedIds.add(id.replace(' ', '-'))
+          }
+          // If it's an owner/staff named band like "P1 Mr" or "C1 Sophia", also include short code (P1 / C1)
+          if (/^(P|C)\d+\s+/.test(id)) {
+            const shortCode = id.split(' ')[0]
+            expandedIds.add(shortCode)
+          }
+        }
+        // Always include default pattern variants for this cabin number
+        if (cabin?.cabin_number) {
+          expandedIds.add(`G1-${cabin.cabin_number}`)
+          expandedIds.add(`G2-${cabin.cabin_number}`)
+          expandedIds.add(`G1 ${cabin.cabin_number}`)
+          expandedIds.add(`G2 ${cabin.cabin_number}`)
+        }
+        const finalWristbandIds = Array.from(expandedIds)
+
        // Looking for wristbands for cabin
 
        // Fetch available wristbands for this cabin
@@ -115,7 +142,7 @@ export function CabinAssignmentDialog({
          .from("wristbands")
          .select("*")
          .is("guest_id", null)
-         .in("wristband_id", wristbandIds)
+         .in("wristband_id", finalWristbandIds)
          .order("wristband_id")
 
        if (wristbandsError) throw wristbandsError

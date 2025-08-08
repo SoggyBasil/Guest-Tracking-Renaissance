@@ -9,12 +9,19 @@ import { Input } from "@/components/ui/input"
 // import { useLiveWristbands } from "@/lib/tracking-api" // COMMENTED OUT - Using real API now
 import { useLiveWristbands } from "@/lib/real-tracking-api"
 import { supabase } from "@/lib/supabase-client"
-import { Signal, MapPin, AlertTriangle, RefreshCw, Search, Navigation, Zap, Bug, ChevronDown, ChevronRight } from "lucide-react"
+import { Signal, MapPin, AlertTriangle, RefreshCw, Search, Navigation, Zap, Bug, ChevronDown, ChevronRight, Phone } from "lucide-react"
 import { GuestProfilePopup } from "./guest-profile-popup"
+import { ServiceCallPopup } from "./service-call-popup"
+import { TraceITServiceItem } from "@/lib/traceit"
 import { testApiConnection, testCors } from "@/lib/api-test"
+import { fetchTraceITServiceCalls, groupByWristband } from "@/lib/traceit"
+import { useServiceCalls } from "@/hooks/use-service-calls"
+import { ServiceCallAlerts } from "@/components/service-call-alerts"
+import { safeFormatDate } from "@/lib/utils"
 
 export function LiveTrackingDashboard() {
   const { wristbands, stats: trackingStats, isConnected, refreshData } = useLiveWristbands()
+  const { serviceCalls, getWristbandAlerts, getServiceCallCount } = useServiceCalls()
   const [searchTerm, setSearchTerm] = useState("")
   const [activeFilter, setActiveFilter] = useState<'all' | 'family' | 'guest' | 'test'>('all')
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
@@ -23,21 +30,27 @@ export function LiveTrackingDashboard() {
     wristband: any;
   } | null>(null)
   const [showGuestProfile, setShowGuestProfile] = useState(false)
+  const [selectedServiceCall, setSelectedServiceCall] = useState<TraceITServiceItem | null>(null)
+  const [showServiceCallPopup, setShowServiceCallPopup] = useState(false)
   const [allGuests, setAllGuests] = useState<any[]>([])
   const [allCabins, setAllCabins] = useState<any[]>([])
   const [guestAssignments, setGuestAssignments] = useState<any[]>([])
-  const [lastUpdate, setLastUpdate] = useState<Date>(new Date())
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
   const [loading, setLoading] = useState(false)
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
     setMounted(true)
+    // Initialize lastUpdate on client side only to prevent hydration mismatch
+    if (!lastUpdate) {
+      setLastUpdate(new Date())
+    }
     loadData()
     const interval = setInterval(() => {
       setLastUpdate(new Date())
     }, 1000)
     return () => clearInterval(interval)
-  }, [])
+  }, [lastUpdate])
 
   const loadData = async () => {
     try {
@@ -100,6 +113,44 @@ export function LiveTrackingDashboard() {
 
   const getDisplayLocation = (wristband: any) => {
     return wristband.cabinNumber ? wristband.location : "Unassigned"
+  }
+
+  const getServiceCount = (wristbandId: string) => {
+    return getServiceCallCount(wristbandId)
+  }
+
+  const getWristbandFlashState = (wristbandId: string) => {
+    const alerts = getWristbandAlerts(wristbandId)
+    const activeAlert = alerts.find(alert => alert.flashState !== 'none')
+    return activeAlert?.flashState || 'none'
+  }
+
+  const getWristbandServiceAlerts = (wristbandId: string) => {
+    const alerts = getWristbandAlerts(wristbandId)
+    // Return only the last 3 service calls
+    return alerts.slice(-3)
+  }
+
+  const formatTime = (timestamp: string) => {
+    const date = new Date(timestamp)
+    return date.toLocaleTimeString('en-US', { 
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    })
+  }
+
+  const handleServiceCallClick = (alert: any, event: React.MouseEvent) => {
+    // Prevent the click from bubbling up to the parent card
+    event.stopPropagation()
+    
+    // Find the corresponding service call from the service calls data
+    const serviceCall = serviceCalls.find((call: TraceITServiceItem) => call.id.toString() === alert.callId)
+    if (serviceCall) {
+      setSelectedServiceCall(serviceCall)
+      setShowServiceCallPopup(true)
+    }
   }
 
   const alertWristbands = wristbands.filter((wb) => wb.alerts.length > 0)
@@ -251,7 +302,7 @@ export function LiveTrackingDashboard() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">
-              Renaissance
+              Guest Tracking
             </h1>
             <p className="text-slate-400 mt-2">Real-time guest location and signal monitoring</p>
           </div>
@@ -263,7 +314,12 @@ export function LiveTrackingDashboard() {
               </span>
             </div>
             <Badge variant="outline" className="border-blue-400 text-blue-400">
-              Last Update: {mounted ? lastUpdate.toLocaleTimeString() : '--:--:--'}
+              Last Update: {mounted && lastUpdate ? lastUpdate.toLocaleTimeString('en-US', { 
+                hour12: false,
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+              }) : '--:--:--'}
             </Badge>
             <Button
               onClick={refreshData}
@@ -319,10 +375,10 @@ export function LiveTrackingDashboard() {
           <Card className="bg-slate-800/50 border-slate-700">
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
-                <AlertTriangle className="h-8 w-8 text-red-400" />
+                <Phone className="h-8 w-8 text-red-400" />
                 <div>
-                  <p className="text-2xl font-bold text-white">{trackingStats?.maintenanceCount || 0}</p>
-                  <p className="text-slate-400 text-sm">Maintenance</p>
+                  <p className="text-2xl font-bold text-white">{serviceCalls.filter(call => call.status === 'sentToRadios' || !call.status).length}</p>
+                  <p className="text-slate-400 text-sm">Active Service Calls</p>
                 </div>
               </div>
             </CardContent>
@@ -353,6 +409,38 @@ export function LiveTrackingDashboard() {
             </AlertDescription>
           </Alert>
         )}
+
+        {/* Service Call Alert */}
+        {(() => {
+          const activeServiceCalls = serviceCalls.filter(call => 
+            call.status === 'sentToRadios' || !call.status
+          )
+          return activeServiceCalls.length > 0 && (
+            <Alert className="bg-red-900/20 border-red-500 cursor-pointer hover:bg-red-900/30 transition-colors" onClick={() => {
+              // Scroll to the first wristband with service calls
+              const firstServiceCall = activeServiceCalls[0]
+              if (firstServiceCall.wristbands && firstServiceCall.wristbands.length > 0) {
+                const wristbandId = firstServiceCall.wristbands[0]
+                const element = document.querySelector(`[data-wristband-id="${wristbandId}"]`)
+                if (element) {
+                  element.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  // Add a temporary highlight effect
+                  element.classList.add('ring-4', 'ring-red-500', 'ring-opacity-50')
+                  setTimeout(() => {
+                    element.classList.remove('ring-4', 'ring-red-500', 'ring-opacity-50')
+                  }, 3000)
+                }
+              }
+            }}>
+              <Phone className="h-4 w-4" />
+              <AlertDescription>
+                <strong>{activeServiceCalls.length} Active Service Call(s):</strong>{" "}
+                {activeServiceCalls.map((call) => call.text).slice(0, 2).join(", ")}
+                {activeServiceCalls.length > 2 && ` and ${activeServiceCalls.length - 2} more`} - Click to view
+              </AlertDescription>
+            </Alert>
+          )
+        })()}
 
         {/* Search */}
         <div className="relative">
@@ -427,16 +515,23 @@ export function LiveTrackingDashboard() {
               </button>
               
               {!collapsedGroups.has('Family') && (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4 border-t border-green-500/30">
-                                     {familyWristbands.map((wristband) => (
-                     <Card
-                       key={wristband.id}
-                       id={`wristband-${wristband.id}`}
-                       className={`bg-slate-800/50 border-slate-700 hover:bg-slate-800/70 transition-all duration-200 cursor-pointer ${
-                         wristband.isOnTheMove ? "ring-2 ring-orange-500 shadow-lg shadow-orange-500/20" : ""
-                       }`}
-                       onClick={() => handleGuestClick(wristband)}
-                     >
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4 border-t border-green-500/30">
+                  {familyWristbands.map((wristband) => (
+                    <Card
+                      key={wristband.id}
+                      id={`wristband-${wristband.id}`}
+                      data-wristband-id={wristband.wristbandId}
+                      className={`bg-slate-800/50 border-slate-700 hover:bg-slate-800/70 transition-all duration-200 cursor-pointer ${
+                        wristband.isOnTheMove ? "ring-2 ring-orange-500 shadow-lg shadow-orange-500/20" : ""
+                      } ${
+                        getWristbandFlashState(wristband.wristbandId) === 'red' 
+                          ? "ring-4 ring-red-500 shadow-lg shadow-red-500/30 animate-pulse" 
+                          : getWristbandFlashState(wristband.wristbandId) === 'green'
+                          ? "ring-4 ring-green-500 shadow-lg shadow-green-500/30 animate-pulse"
+                          : ""
+                      }`}
+                      onClick={() => handleGuestClick(wristband)}
+                    >
                       <CardHeader className="pb-3">
                         <div className="flex items-center justify-between">
                           <CardTitle className="text-white text-lg">{wristband.guestName}</CardTitle>
@@ -450,9 +545,15 @@ export function LiveTrackingDashboard() {
                             )}
                           </div>
                         </div>
-                        <CardDescription className="text-slate-400">
-                          ID: {wristband.wristbandId} • {wristband.status.replace("_", " ").toUpperCase()}
-                        </CardDescription>
+                          <CardDescription className="text-slate-400">
+                            ID: {wristband.wristbandId} • {wristband.status.replace("_", " ").toUpperCase()}
+                            {(() => {
+                              const cnt = getServiceCount(wristband.wristbandId)
+                              return cnt > 0 ? (
+                                <span className="ml-2 text-cyan-400">• Service calls: {cnt}</span>
+                              ) : null
+                            })()}
+                          </CardDescription>
                       </CardHeader>
                       <CardContent className="space-y-4">
                         {/* Location */}
@@ -505,16 +606,49 @@ export function LiveTrackingDashboard() {
                             </div>
                             {wristband.locationChangedAt && (
                               <div className="text-xs text-orange-300 mt-1">
-                                Location changed: {new Date(wristband.locationChangedAt).toLocaleTimeString()}
+                                Location changed: {new Date(wristband.locationChangedAt).toLocaleTimeString('en-US', { 
+                                  hour12: false,
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                  second: '2-digit'
+                                })}
                               </div>
                             )}
                           </div>
                         )}
 
+                        {/* Service Call Alerts */}
+                        <div className="space-y-2">
+                          <div className="text-xs font-semibold text-cyan-400">
+                            Service Calls: {getServiceCount(wristband.wristbandId)}
+                          </div>
+                          {getWristbandServiceAlerts(wristband.wristbandId).map((alert, index) => (
+                            <div 
+                              key={index} 
+                              className="text-xs bg-cyan-900/20 border border-cyan-500/30 rounded p-2 cursor-pointer hover:bg-cyan-900/30 transition-colors"
+                              onClick={(e) => handleServiceCallClick(alert, e)}
+                            >
+                              <div className="text-cyan-300 font-medium">{alert.text}</div>
+                              <div className="text-cyan-400/70 mt-1">
+                                {(alert.status === 'accepted' || alert.status === 'expired') && alert.ackBy ? (
+                                  <>Accepted by {alert.ackBy} at {safeFormatDate(alert.ackTime)}</>
+                                ) : (
+                                  <>Status: {alert.status === 'sentToRadios' ? 'Sent to Radios' : alert.status === 'expired' ? 'Accepted' : alert.status}</>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                          {getServiceCount(wristband.wristbandId) > 3 && (
+                            <div className="text-xs text-cyan-400/70 italic">
+                              Showing last 3 of {getServiceCount(wristband.wristbandId)} calls
+                            </div>
+                          )}
+                        </div>
+
                         {/* Alerts */}
                         {wristband.alerts.length > 0 && (
                           <div className="space-y-1">
-                            {wristband.alerts.map((alert, index) => (
+                            {wristband.alerts.map((alert: string, index: number) => (
                               <Badge key={index} variant="destructive" className="text-xs block">
                                 {alert}
                               </Badge>
@@ -523,7 +657,15 @@ export function LiveTrackingDashboard() {
                         )}
 
                         <div className="text-xs text-slate-500 border-t border-slate-700 pt-2">
-                          Last seen: {new Date(wristband.lastSeen).toLocaleString()}
+                          Last seen: {new Date(wristband.lastSeen).toLocaleString('en-US', { 
+                            year: 'numeric',
+                            month: '2-digit',
+                            day: '2-digit',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            second: '2-digit',
+                            hour12: false
+                          })}
                         </div>
                       </CardContent>
                     </Card>
@@ -560,8 +702,15 @@ export function LiveTrackingDashboard() {
                     <Card
                       key={wristband.id}
                       id={`wristband-${wristband.id}`}
+                      data-wristband-id={wristband.wristbandId}
                       className={`bg-slate-800/50 border-slate-700 hover:bg-slate-800/70 transition-all duration-200 cursor-pointer ${
                         wristband.isOnTheMove ? "ring-2 ring-orange-500 shadow-lg shadow-orange-500/20" : ""
+                      } ${
+                        getWristbandFlashState(wristband.wristbandId) === 'red' 
+                          ? "ring-4 ring-red-500 shadow-lg shadow-red-500/30 animate-pulse" 
+                          : getWristbandFlashState(wristband.wristbandId) === 'green'
+                          ? "ring-4 ring-green-500 shadow-lg shadow-green-500/30 animate-pulse"
+                          : ""
                       }`}
                       onClick={() => handleGuestClick(wristband)}
                     >
@@ -578,9 +727,15 @@ export function LiveTrackingDashboard() {
                             )}
                           </div>
                         </div>
-                        <CardDescription className="text-slate-400">
-                          ID: {wristband.wristbandId} • {wristband.status.replace("_", " ").toUpperCase()}
-                        </CardDescription>
+                          <CardDescription className="text-slate-400">
+                            ID: {wristband.wristbandId} • {wristband.status.replace("_", " ").toUpperCase()}
+                            {(() => {
+                              const cnt = getServiceCount(wristband.wristbandId)
+                              return cnt > 0 ? (
+                                <span className="ml-2 text-cyan-400">• Service calls: {cnt}</span>
+                              ) : null
+                            })()}
+                          </CardDescription>
                       </CardHeader>
                       <CardContent className="space-y-4">
                         {/* Location */}
@@ -633,16 +788,49 @@ export function LiveTrackingDashboard() {
                             </div>
                             {wristband.locationChangedAt && (
                               <div className="text-xs text-orange-300 mt-1">
-                                Location changed: {new Date(wristband.locationChangedAt).toLocaleTimeString()}
+                                Location changed: {new Date(wristband.locationChangedAt).toLocaleTimeString('en-US', { 
+                                  hour12: false,
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                  second: '2-digit'
+                                })}
                               </div>
                             )}
                           </div>
                         )}
 
+                        {/* Service Call Alerts */}
+                        <div className="space-y-2">
+                          <div className="text-xs font-semibold text-cyan-400">
+                            Service Calls: {getServiceCount(wristband.wristbandId)}
+                          </div>
+                          {getWristbandServiceAlerts(wristband.wristbandId).map((alert, index) => (
+                            <div 
+                              key={index} 
+                              className="text-xs bg-cyan-900/20 border border-cyan-500/30 rounded p-2 cursor-pointer hover:bg-cyan-900/30 transition-colors"
+                              onClick={(e) => handleServiceCallClick(alert, e)}
+                            >
+                              <div className="text-cyan-300 font-medium">{alert.text}</div>
+                              <div className="text-cyan-400/70 mt-1">
+                                {(alert.status === 'accepted' || alert.status === 'expired') && alert.ackBy ? (
+                                  <>Accepted by {alert.ackBy} at {safeFormatDate(alert.ackTime)}</>
+                                ) : (
+                                  <>Status: {alert.status === 'sentToRadios' ? 'Sent to Radios' : alert.status === 'expired' ? 'Accepted' : alert.status}</>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                          {getServiceCount(wristband.wristbandId) > 3 && (
+                            <div className="text-xs text-cyan-400/70 italic">
+                              Showing last 3 of {getServiceCount(wristband.wristbandId)} calls
+                            </div>
+                          )}
+                        </div>
+
                         {/* Alerts */}
                         {wristband.alerts.length > 0 && (
                           <div className="space-y-1">
-                            {wristband.alerts.map((alert, index) => (
+                            {wristband.alerts.map((alert: string, index: number) => (
                               <Badge key={index} variant="destructive" className="text-xs block">
                                 {alert}
                               </Badge>
@@ -651,7 +839,15 @@ export function LiveTrackingDashboard() {
                         )}
 
                         <div className="text-xs text-slate-500 border-t border-slate-700 pt-2">
-                          Last seen: {new Date(wristband.lastSeen).toLocaleString()}
+                          Last seen: {new Date(wristband.lastSeen).toLocaleString('en-US', { 
+                            year: 'numeric',
+                            month: '2-digit',
+                            day: '2-digit',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            second: '2-digit',
+                            hour12: false
+                          })}
                         </div>
                       </CardContent>
                     </Card>
@@ -688,8 +884,15 @@ export function LiveTrackingDashboard() {
                     <Card
                       key={wristband.id}
                       id={`wristband-${wristband.id}`}
+                      data-wristband-id={wristband.wristbandId}
                       className={`bg-slate-800/50 border-slate-700 hover:bg-slate-800/70 transition-all duration-200 cursor-pointer ${
                         wristband.isOnTheMove ? "ring-2 ring-orange-500 shadow-lg shadow-orange-500/20" : ""
+                      } ${
+                        getWristbandFlashState(wristband.wristbandId) === 'red' 
+                          ? "ring-4 ring-red-500 shadow-lg shadow-red-500/30 animate-pulse" 
+                          : getWristbandFlashState(wristband.wristbandId) === 'green'
+                          ? "ring-4 ring-green-500 shadow-lg shadow-green-500/30 animate-pulse"
+                          : ""
                       }`}
                       onClick={() => handleGuestClick(wristband)}
                     >
@@ -706,9 +909,15 @@ export function LiveTrackingDashboard() {
                             )}
                           </div>
                         </div>
-                        <CardDescription className="text-slate-400">
-                          ID: {wristband.wristbandId} • {wristband.status.replace("_", " ").toUpperCase()}
-                        </CardDescription>
+                          <CardDescription className="text-slate-400">
+                            ID: {wristband.wristbandId} • {wristband.status.replace("_", " ").toUpperCase()}
+                            {(() => {
+                              const cnt = getServiceCount(wristband.wristbandId)
+                              return cnt > 0 ? (
+                                <span className="ml-2 text-cyan-400">• Service calls: {cnt}</span>
+                              ) : null
+                            })()}
+                          </CardDescription>
                       </CardHeader>
                       <CardContent className="space-y-4">
                         {/* Location */}
@@ -761,16 +970,49 @@ export function LiveTrackingDashboard() {
                             </div>
                             {wristband.locationChangedAt && (
                               <div className="text-xs text-orange-300 mt-1">
-                                Location changed: {new Date(wristband.locationChangedAt).toLocaleTimeString()}
+                                Location changed: {new Date(wristband.locationChangedAt).toLocaleTimeString('en-US', { 
+                                  hour12: false,
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                  second: '2-digit'
+                                })}
                               </div>
                             )}
                           </div>
                         )}
 
+                        {/* Service Call Alerts */}
+                        <div className="space-y-2">
+                          <div className="text-xs font-semibold text-cyan-400">
+                            Service Calls: {getServiceCount(wristband.wristbandId)}
+                          </div>
+                          {getWristbandServiceAlerts(wristband.wristbandId).map((alert, index) => (
+                            <div 
+                              key={index} 
+                              className="text-xs bg-cyan-900/20 border border-cyan-500/30 rounded p-2 cursor-pointer hover:bg-cyan-900/30 transition-colors"
+                              onClick={(e) => handleServiceCallClick(alert, e)}
+                            >
+                              <div className="text-cyan-300 font-medium">{alert.text}</div>
+                              <div className="text-cyan-400/70 mt-1">
+                                {(alert.status === 'accepted' || alert.status === 'expired') && alert.ackBy ? (
+                                  <>Accepted by {alert.ackBy} at {safeFormatDate(alert.ackTime)}</>
+                                ) : (
+                                  <>Status: {alert.status === 'sentToRadios' ? 'Sent to Radios' : alert.status === 'expired' ? 'Accepted' : alert.status}</>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                          {getServiceCount(wristband.wristbandId) > 3 && (
+                            <div className="text-xs text-cyan-400/70 italic">
+                              Showing last 3 of {getServiceCount(wristband.wristbandId)} calls
+                            </div>
+                          )}
+                        </div>
+
                         {/* Alerts */}
                         {wristband.alerts.length > 0 && (
                           <div className="space-y-1">
-                            {wristband.alerts.map((alert, index) => (
+                            {wristband.alerts.map((alert: string, index: number) => (
                               <Badge key={index} variant="destructive" className="text-xs block">
                                 {alert}
                               </Badge>
@@ -779,7 +1021,15 @@ export function LiveTrackingDashboard() {
                         )}
 
                         <div className="text-xs text-slate-500 border-t border-slate-700 pt-2">
-                          Last seen: {new Date(wristband.lastSeen).toLocaleString()}
+                          Last seen: {new Date(wristband.lastSeen).toLocaleString('en-US', { 
+                            year: 'numeric',
+                            month: '2-digit',
+                            day: '2-digit',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            second: '2-digit',
+                            hour12: false
+                          })}
                         </div>
                       </CardContent>
                     </Card>
@@ -850,7 +1100,15 @@ export function LiveTrackingDashboard() {
                       </div>
 
                       <div className="text-xs text-slate-500 border-t border-slate-700 pt-2">
-                        Last seen: {new Date(wristband.lastSeen).toLocaleString()}
+                        Last seen: {new Date(wristband.lastSeen).toLocaleString('en-US', { 
+                          year: 'numeric',
+                          month: '2-digit',
+                          day: '2-digit',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                          second: '2-digit',
+                          hour12: false
+                        })}
                       </div>
                     </CardContent>
                   </Card>
@@ -868,6 +1126,16 @@ export function LiveTrackingDashboard() {
           onClose={() => {
             setShowGuestProfile(false)
             setSelectedWristband(null)
+          }}
+        />
+
+        {/* Service Call Popup */}
+        <ServiceCallPopup
+          serviceCall={selectedServiceCall}
+          isOpen={showServiceCallPopup}
+          onClose={() => {
+            setShowServiceCallPopup(false)
+            setSelectedServiceCall(null)
           }}
         />
       </div>

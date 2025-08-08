@@ -23,6 +23,11 @@ export default function HomePage() {
                   Assignments
                 </Button>
               </Link>
+              <Link href="/service-calls">
+                <Button variant="ghost" className="text-white hover:bg-slate-800">
+                  Service Calls
+                </Button>
+              </Link>
             </div>
           </div>
         </div>
