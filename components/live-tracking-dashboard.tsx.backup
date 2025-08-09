@@ -12,19 +12,17 @@ import { supabase } from "@/lib/supabase-client"
 import { Signal, MapPin, AlertTriangle, RefreshCw, Search, Navigation, Zap, Bug, ChevronDown, ChevronRight, Phone } from "lucide-react"
 import { GuestProfilePopup } from "./guest-profile-popup"
 import { ServiceCallPopup } from "./service-call-popup"
-import { NavigationMenu } from "@/components/ui/navigation-menu"
+
 import { TraceITServiceItem } from "@/lib/traceit"
 import { testApiConnection, testCors } from "@/lib/api-test"
 import { fetchTraceITServiceCalls, groupByWristband } from "@/lib/traceit"
-import { useLiveServiceCalls } from "@/hooks/use-live-service-calls"
+import { useServiceCalls } from "@/hooks/use-service-calls"
 import { ServiceCallAlerts } from "@/components/service-call-alerts"
 import { safeFormatDate } from "@/lib/utils"
-import { useToast } from "@/hooks/use-toast"
 
 export function LiveTrackingDashboard() {
-  const { wristbands, stats: trackingStats, isConnected: trackingConnected, refreshData, onDeviceOnline, onDeviceOffline, getDeviceOfflineTime } = useLiveWristbands()
-  const { serviceCalls, getWristbandAlerts, getServiceCallCount, isConnected: serviceCallsConnected, clearServiceCalls } = useLiveServiceCalls()
-  const { toast } = useToast()
+  const { wristbands, stats: trackingStats, isConnected, refreshData } = useLiveWristbands()
+  const { serviceCalls, getWristbandAlerts, getServiceCallCount } = useServiceCalls()
   const [searchTerm, setSearchTerm] = useState("")
   const [activeFilter, setActiveFilter] = useState<'all' | 'family' | 'guest' | 'test'>('all')
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
@@ -54,46 +52,6 @@ export function LiveTrackingDashboard() {
     }, 1000)
     return () => clearInterval(interval)
   }, [lastUpdate])
-
-  // Subscribe to device online notifications
-  useEffect(() => {
-    if (!onDeviceOnline) return
-
-    const unsubscribe = onDeviceOnline((deviceId: string) => {
-      console.log(`🟢 Device came online: ${deviceId}`)
-      
-      // Find the device to get its current location
-      const device = wristbands.find(wb => wb.wristbandId === deviceId)
-      const location = device?.location && device.location !== "Unknown Location" 
-        ? ` in ${device.location}` 
-        : ''
-      
-      toast({
-        title: "🟢 Device Online",
-        description: `${deviceId} has come online${location}`,
-        className: "bg-green-900/20 border-green-500 text-green-400",
-      })
-    })
-
-    return unsubscribe
-  }, [onDeviceOnline, toast, wristbands, getDeviceOfflineTime])
-
-  // Subscribe to device offline notifications
-  useEffect(() => {
-    if (!onDeviceOffline) return
-
-    const unsubscribe = onDeviceOffline((deviceId: string, offlineTime: number) => {
-      console.log(`🔴 Device went offline: ${deviceId}`)
-      
-      toast({
-        title: "🔴 Device Offline",
-        description: `${deviceId} has gone offline`,
-        className: "bg-red-900/20 border-red-500 text-red-400",
-      })
-    })
-
-    return unsubscribe
-  }, [onDeviceOffline, toast])
 
   const loadData = async () => {
     try {
@@ -341,53 +299,120 @@ export function LiveTrackingDashboard() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 text-white p-6">
       <div className="max-w-7xl mx-auto space-y-6">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">
-              Renaissance
-            </h1>
-            <p className="text-slate-400 mt-2">Real-time guest location and live service call monitoring (1min signal timeout)</p>
+        {/* Header with System Status and Collapsible Menu */}
+        <div className="space-y-4">
+          {/* Main Header */}
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">
+                Yacht Guest Tracking
+              </h1>
+              <p className="text-slate-400 mt-2">Real-time guest location and signal monitoring</p>
+            </div>
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <div className={`w-3 h-3 rounded-full ${isConnected ? "bg-green-400 animate-pulse" : "bg-red-400"}`} />
+                <span className={isConnected ? "text-green-400" : "text-red-400"}>
+                  {isConnected ? "Live System Active" : "System Offline"}
+                </span>
+              </div>
+              <Badge variant="outline" className="border-blue-400 text-blue-400">
+                Last Update: {mounted && lastUpdate ? lastUpdate.toLocaleTimeString('en-US', { 
+                  hour12: false,
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  second: '2-digit'
+                }) : '--:--:--'}
+              </Badge>
+              <Button
+                onClick={refreshData}
+                variant="outline"
+                size="sm"
+                className="border-blue-400 text-blue-400 bg-transparent"
+              >
+                <RefreshCw className="h-4 w-4 mr-2" />
+                Refresh
+              </Button>
+            </div>
           </div>
+
+          {/* Inline Collapsible Menu Groups */}
           <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <div className={`w-3 h-3 rounded-full ${trackingConnected ? "bg-green-400 animate-pulse" : "bg-red-400"}`} />
-              <span className={trackingConnected ? "text-green-400" : "text-red-400"}>
-                {trackingConnected ? "Tracking Active" : "Tracking Offline"}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className={`w-3 h-3 rounded-full ${serviceCallsConnected ? "bg-blue-400 animate-pulse" : "bg-red-400"}`} />
-              <span className={serviceCallsConnected ? "text-blue-400" : "text-red-400"}>
-                {serviceCallsConnected ? "Live Service Calls" : "Service Calls Offline"}
-              </span>
-            </div>
-            <Badge variant="outline" className="border-blue-400 text-blue-400">
-              Last Update: {mounted && lastUpdate ? lastUpdate.toLocaleTimeString('en-US', { 
-                hour12: false,
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit'
-              }) : '--:--:--'}
-            </Badge>
-            <Button
-              onClick={refreshData}
-              variant="outline"
-              size="sm"
-              className="border-blue-400 text-blue-400 bg-transparent"
-            >
-              <RefreshCw className="h-4 w-4 mr-2" />
-              Refresh
-            </Button>
-            <Button
-              onClick={clearServiceCalls}
-              variant="outline"
-              size="sm"
-              className="border-red-400 text-red-400 bg-transparent"
-            >
-              Clear Service Calls
-            </Button>
-            <NavigationMenu />
+            {/* Family Group */}
+            {familyWristbands.length > 0 && (
+              <button
+                onClick={() => toggleGroupCollapse('Family')}
+                className="flex items-center gap-3 px-4 py-2 bg-slate-800/30 border border-green-500/30 rounded-lg hover:bg-slate-800/50 transition-colors"
+              >
+                <div className="w-3 h-3 rounded-full bg-green-400"></div>
+                <span className="text-lg font-semibold text-green-400">Family</span>
+                <Badge variant="outline" className="border-green-400 text-green-400">
+                  {familyWristbands.length}
+                </Badge>
+                {collapsedGroups.has('Family') ? (
+                  <ChevronRight className="h-5 w-5 text-green-400" />
+                ) : (
+                  <ChevronDown className="h-5 w-5 text-green-400" />
+                )}
+              </button>
+            )}
+
+            {/* Guest Group */}
+            {guestWristbands.length > 0 && (
+              <button
+                onClick={() => toggleGroupCollapse('Guest')}
+                className="flex items-center gap-3 px-4 py-2 bg-slate-800/30 border border-blue-500/30 rounded-lg hover:bg-slate-800/50 transition-colors"
+              >
+                <div className="w-3 h-3 rounded-full bg-blue-400"></div>
+                <span className="text-lg font-semibold text-blue-400">Guest</span>
+                <Badge variant="outline" className="border-blue-400 text-blue-400">
+                  {guestWristbands.length}
+                </Badge>
+                {collapsedGroups.has('Guest') ? (
+                  <ChevronRight className="h-5 w-5 text-blue-400" />
+                ) : (
+                  <ChevronDown className="h-5 w-5 text-blue-400" />
+                )}
+              </button>
+            )}
+
+            {/* Test Group */}
+            {testWristbands.length > 0 && (
+              <button
+                onClick={() => toggleGroupCollapse('Test')}
+                className="flex items-center gap-3 px-4 py-2 bg-slate-800/30 border border-purple-500/30 rounded-lg hover:bg-slate-800/50 transition-colors"
+              >
+                <div className="w-3 h-3 rounded-full bg-purple-400"></div>
+                <span className="text-lg font-semibold text-purple-400">Test</span>
+                <Badge variant="outline" className="border-purple-400 text-purple-400">
+                  {testWristbands.length}
+                </Badge>
+                {collapsedGroups.has('Test') ? (
+                  <ChevronRight className="h-5 w-5 text-purple-400" />
+                ) : (
+                  <ChevronDown className="h-5 w-5 text-purple-400" />
+                )}
+              </button>
+            )}
+
+            {/* Offline Group */}
+            {offlineWristbands.length > 0 && (
+              <button
+                onClick={() => toggleGroupCollapse('Offline')}
+                className="flex items-center gap-3 px-4 py-2 bg-slate-800/30 border border-gray-500/30 rounded-lg hover:bg-slate-800/50 transition-colors"
+              >
+                <div className="w-3 h-3 rounded-full bg-gray-400"></div>
+                <span className="text-lg font-semibold text-gray-400">Offline</span>
+                <Badge variant="outline" className="border-gray-400 text-gray-400">
+                  {offlineWristbands.length}
+                </Badge>
+                {collapsedGroups.has('Offline') ? (
+                  <ChevronRight className="h-5 w-5 text-gray-400" />
+                ) : (
+                  <ChevronDown className="h-5 w-5 text-gray-400" />
+                )}
+              </button>
+            )}
           </div>
         </div>
 
@@ -548,30 +573,10 @@ export function LiveTrackingDashboard() {
 
 
 
-        {/* Collapsible Wristband Groups */}
+        {/* Wristband Groups Content */}
         <div className="space-y-4">
-          {/* Family Group */}
-          {familyWristbands.length > 0 && (
-            <div className="bg-slate-800/30 border border-green-500/30 rounded-lg">
-              <button
-                onClick={() => toggleGroupCollapse('Family')}
-                className="w-full p-4 flex items-center justify-between hover:bg-slate-800/50 transition-colors"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-3 h-3 rounded-full bg-green-400"></div>
-                  <h3 className="text-lg font-semibold text-green-400">Family</h3>
-                  <Badge variant="outline" className="border-green-400 text-green-400">
-                    {familyWristbands.length}
-                  </Badge>
-                </div>
-                {collapsedGroups.has('Family') ? (
-                  <ChevronRight className="h-5 w-5 text-green-400" />
-                ) : (
-                  <ChevronDown className="h-5 w-5 text-green-400" />
-                )}
-              </button>
-              
-              {!collapsedGroups.has('Family') && (
+          {/* Family Group Content */}
+          {familyWristbands.length > 0 && !collapsedGroups.has('Family') && (
                                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4 border-t border-green-500/30">
                   {familyWristbands.map((wristband) => (
                     <Card
@@ -732,28 +737,8 @@ export function LiveTrackingDashboard() {
             </div>
           )}
 
-          {/* Guest Group */}
-          {guestWristbands.length > 0 && (
-            <div className="bg-slate-800/30 border border-blue-500/30 rounded-lg">
-              <button
-                onClick={() => toggleGroupCollapse('Guest')}
-                className="w-full p-4 flex items-center justify-between hover:bg-slate-800/50 transition-colors"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-3 h-3 rounded-full bg-blue-400"></div>
-                  <h3 className="text-lg font-semibold text-blue-400">Guest</h3>
-                  <Badge variant="outline" className="border-blue-400 text-blue-400">
-                    {guestWristbands.length}
-                  </Badge>
-                </div>
-                {collapsedGroups.has('Guest') ? (
-                  <ChevronRight className="h-5 w-5 text-blue-400" />
-                ) : (
-                  <ChevronDown className="h-5 w-5 text-blue-400" />
-                )}
-              </button>
-              
-              {!collapsedGroups.has('Guest') && (
+          {/* Guest Group Content */}
+          {guestWristbands.length > 0 && !collapsedGroups.has('Guest') && (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4 border-t border-blue-500/30">
                   {guestWristbands.map((wristband) => (
                     <Card
@@ -914,28 +899,8 @@ export function LiveTrackingDashboard() {
             </div>
           )}
 
-          {/* Test Group */}
-          {testWristbands.length > 0 && (
-            <div className="bg-slate-800/30 border border-purple-500/30 rounded-lg">
-              <button
-                onClick={() => toggleGroupCollapse('Test')}
-                className="w-full p-4 flex items-center justify-between hover:bg-slate-800/50 transition-colors"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-3 h-3 rounded-full bg-purple-400"></div>
-                  <h3 className="text-lg font-semibold text-purple-400">Test</h3>
-                  <Badge variant="outline" className="border-purple-400 text-purple-400">
-                    {testWristbands.length}
-                  </Badge>
-                </div>
-                {collapsedGroups.has('Test') ? (
-                  <ChevronRight className="h-5 w-5 text-purple-400" />
-                ) : (
-                  <ChevronDown className="h-5 w-5 text-purple-400" />
-                )}
-              </button>
-              
-              {!collapsedGroups.has('Test') && (
+          {/* Test Group Content */}
+          {testWristbands.length > 0 && !collapsedGroups.has('Test') && (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4 border-t border-purple-500/30">
                   {testWristbands.map((wristband) => (
                     <Card
@@ -1095,40 +1060,15 @@ export function LiveTrackingDashboard() {
               )}
             </div>
           )}
-        </div>
 
-        {/* Offline Devices */}
-        {offlineWristbands.length > 0 && (
-          <div className="bg-slate-800/30 border border-gray-500/30 rounded-lg">
-            <button
-              onClick={() => toggleGroupCollapse('Offline')}
-              className="w-full p-4 flex items-center justify-between hover:bg-slate-800/50 transition-colors"
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-3 h-3 rounded-full bg-gray-400"></div>
-                <h3 className="text-lg font-semibold text-gray-400">Offline</h3>
-                <Badge variant="outline" className="border-gray-400 text-gray-400">
-                  {offlineWristbands.length}
-                </Badge>
-              </div>
-              {collapsedGroups.has('Offline') ? (
-                <ChevronRight className="h-5 w-5 text-gray-400" />
-              ) : (
-                <ChevronDown className="h-5 w-5 text-gray-400" />
-              )}
-            </button>
-            
-            {!collapsedGroups.has('Offline') && (
+        {/* Offline Group Content */}
+        {offlineWristbands.length > 0 && !collapsedGroups.has('Offline') && (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4 border-t border-gray-500/30">
                 {offlineWristbands.map((wristband) => (
                   <Card
                     key={wristband.id}
                     id={`wristband-${wristband.id}`}
-                    className={`bg-slate-800/50 border-slate-700 hover:bg-slate-800/70 transition-all duration-200 cursor-pointer opacity-60 ${
-                      wristband.alerts.some(alert => alert.includes('Signal Unchanged') || alert.includes('No Signal')) 
-                        ? 'border-red-500/50 bg-red-900/10' 
-                        : 'border-gray-500/50'
-                    }`}
+                    className="bg-slate-800/50 border-slate-700 hover:bg-slate-800/70 transition-all duration-200 cursor-pointer opacity-60"
                     onClick={() => handleGuestClick(wristband)}
                   >
                     <CardHeader className="pb-3">
@@ -1161,7 +1101,7 @@ export function LiveTrackingDashboard() {
                       </div>
 
                       <div className="text-xs text-slate-500 border-t border-slate-700 pt-2">
-                        <div>Last seen: {new Date(wristband.lastSeen).toLocaleString('en-US', { 
+                        Last seen: {new Date(wristband.lastSeen).toLocaleString('en-US', { 
                           year: 'numeric',
                           month: '2-digit',
                           day: '2-digit',
@@ -1169,24 +1109,7 @@ export function LiveTrackingDashboard() {
                           minute: '2-digit',
                           second: '2-digit',
                           hour12: false
-                        })}</div>
-                        <div className="text-red-400 mt-1">
-                          {(() => {
-                            const offlineTime = getDeviceOfflineTime ? getDeviceOfflineTime(wristband.wristbandId) : null
-                            if (offlineTime) {
-                              const timeSinceOffline = Date.now() - offlineTime
-                              const minutes = Math.floor(timeSinceOffline / (1000 * 60))
-                              const hours = Math.floor(minutes / 60)
-                              if (hours > 0) {
-                                return `Offline for ${hours}h ${minutes % 60}m`
-                              } else {
-                                return `Offline for ${minutes}m`
-                              }
-                            } else {
-                              return `Offline`
-                            }
-                          })()}
-                        </div>
+                        })}
                       </div>
                     </CardContent>
                   </Card>

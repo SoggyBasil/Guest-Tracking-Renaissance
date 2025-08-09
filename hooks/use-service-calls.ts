@@ -42,8 +42,8 @@ export function useServiceCalls() {
   const loadServiceCalls = useCallback(async (forceRefresh = false) => {
     const now = Date.now()
     
-    // Prevent too frequent requests (minimum 5 seconds between requests for better responsiveness)
-    if (!forceRefresh && (now - lastPollTimeRef.current) < 5000) {
+    // Prevent too frequent requests (minimum 2 seconds between requests for better responsiveness)
+    if (!forceRefresh && (now - lastPollTimeRef.current) < 2000) {
       return
     }
 
@@ -51,7 +51,46 @@ export function useServiceCalls() {
       setLoading(true)
       lastPollTimeRef.current = now
       
-      const res = await fetchTraceITServiceCalls({ url: "http://10.101.12.31/alarm.xml" })
+      // Try live endpoint first, fallback to XML
+      let res
+      try {
+        // Try potential live/real-time endpoints
+        const liveEndpoints = [
+          "http://10.101.12.31/live/alarms",
+          "http://10.101.12.31/api/alarms/live", 
+          "http://10.101.12.31/realtime/alarms",
+          "http://10.101.12.31/stream/alarms",
+          "http://10.101.12.31/alarms/current"
+        ]
+        
+        let liveData = null
+        for (const endpoint of liveEndpoints) {
+          try {
+            const liveRes = await fetchTraceITServiceCalls({ url: endpoint })
+            if (liveRes.items && liveRes.items.length >= 0) {
+              console.log(`✅ Found working live endpoint: ${endpoint}`)
+              liveData = liveRes
+              break
+            }
+          } catch (error) {
+            // Continue to next endpoint
+            continue
+          }
+        }
+        
+        if (liveData) {
+          res = liveData
+          console.log("📡 Using live data from real-time endpoint")
+        } else {
+          // Fallback to XML with more frequent polling
+          res = await fetchTraceITServiceCalls({ url: "http://10.101.12.31/alarm.xml" })
+          console.log("📡 Using XML fallback data")
+        }
+      } catch (error) {
+        // Final fallback to XML
+        res = await fetchTraceITServiceCalls({ url: "http://10.101.12.31/alarm.xml" })
+      }
+      
       const newCalls = res.items || []
       
       // Create hash of new data
@@ -247,8 +286,8 @@ export function useServiceCalls() {
     }
 
     // Adaptive polling: longer intervals if there are errors
-    const baseInterval = 15000 // 15 seconds base interval (reduced from 30 for better responsiveness)
-    const errorMultiplier = Math.min(consecutiveErrorsRef.current + 1, 5) // Max 5x multiplier
+    const baseInterval = 3000 // 3 seconds base interval for real-time responsiveness
+    const errorMultiplier = Math.min(consecutiveErrorsRef.current + 1, 3) // Max 3x multiplier
     const pollingInterval = baseInterval * errorMultiplier
 
     console.log(`🔄 Starting service calls polling with ${pollingInterval/1000}s interval`)
