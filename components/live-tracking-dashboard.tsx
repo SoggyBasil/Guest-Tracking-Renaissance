@@ -20,10 +20,11 @@ import { useLiveServiceCalls } from "@/hooks/use-live-service-calls"
 import { ServiceCallAlerts } from "@/components/service-call-alerts"
 import { safeFormatDate } from "@/lib/utils"
 import { useToast } from "@/hooks/use-toast"
+import { localAlarmManager } from "@/lib/local-alarm-manager"
 
 export function LiveTrackingDashboard() {
   const { wristbands, stats: trackingStats, isConnected: trackingConnected, refreshData, onDeviceOnline, onDeviceOffline, getDeviceOfflineTime } = useLiveWristbands()
-  const { serviceCalls, getWristbandAlerts, getServiceCallCount, isConnected: serviceCallsConnected, clearServiceCalls } = useLiveServiceCalls()
+  const { serviceCalls, getWristbandAlerts, getServiceCallCount, isConnected: serviceCallsConnected, clearServiceCalls, acceptServiceCall, acceptAllServiceCalls } = useLiveServiceCalls()
   const { toast } = useToast()
   const [searchTerm, setSearchTerm] = useState("")
   const [activeFilter, setActiveFilter] = useState<'all' | 'family' | 'guest' | 'test'>('all')
@@ -60,8 +61,6 @@ export function LiveTrackingDashboard() {
     if (!onDeviceOnline) return
 
     const unsubscribe = onDeviceOnline((deviceId: string) => {
-      console.log(`🟢 Device came online: ${deviceId}`)
-      
       // Find the device to get its current location
       const device = wristbands.find(wb => wb.wristbandId === deviceId)
       const location = device?.location && device.location !== "Unknown Location" 
@@ -83,8 +82,6 @@ export function LiveTrackingDashboard() {
     if (!onDeviceOffline) return
 
     const unsubscribe = onDeviceOffline((deviceId: string, offlineTime: number) => {
-      console.log(`🔴 Device went offline: ${deviceId}`)
-      
       toast({
         title: "🔴 Device Offline",
         description: `${deviceId} has gone offline`,
@@ -165,7 +162,19 @@ export function LiveTrackingDashboard() {
   const getWristbandFlashState = (wristbandId: string) => {
     const alerts = getWristbandAlerts(wristbandId)
     const activeAlert = alerts.find(alert => alert.flashState !== 'none')
-    return activeAlert?.flashState || 'none'
+    const flashState = activeAlert?.flashState || 'none'
+    
+    // Enhanced debug logging to understand flash state issues
+    if (wristbandId === 'G2 505' || wristbandId === 'G2 408') {
+      const hasAlerts = alerts.length > 0
+      const alertStates = alerts.map(a => `${a.status}:${a.flashState}`)
+      
+      if (hasAlerts || flashState !== 'none') {
+        console.log(`🔍 Flash check ${wristbandId}: ${alerts.length} alerts [${alertStates.join(', ')}] → ${flashState}`)
+      }
+    }
+    
+    return flashState
   }
 
   const getWristbandServiceAlerts = (wristbandId: string) => {
@@ -207,18 +216,15 @@ export function LiveTrackingDashboard() {
     wb.signalStrength === 0 || wb.location.toLowerCase().includes('unknown')
   )
   
-  // Debug logging for offline detection
-  console.log('🔍 Offline detection debug:', {
-    totalWristbands: wristbands.length,
-    offlineWristbands: offlineWristbands.length,
-    offlineDetails: offlineWristbands.map(wb => ({
-      id: wb.wristbandId,
-      location: wb.location,
-      signalStrength: wb.signalStrength,
-      status: wb.status,
-      isOffline: wb.signalStrength === 0 || wb.location.toLowerCase().includes('unknown')
-    }))
-  })
+  // Reduced offline logging - only when counts change significantly
+  const offlineCount = offlineWristbands.length
+  const onlineCount = onlineWristbands.length
+  
+  // Only log status every 10th check or when there are significant changes
+  const shouldLogStatus = (Date.now() % 60000) < 1000 // Every minute
+  if (shouldLogStatus && (offlineCount > 0 || onlineCount !== wristbands.length)) {
+    console.log(`📊 Device status: ${onlineCount} online, ${offlineCount} offline`)
+  }
   
   // Custom sorting function for family wristbands
   const sortFamilyWristbands = (wristbands: any[]) => {
@@ -380,12 +386,43 @@ export function LiveTrackingDashboard() {
               Refresh
             </Button>
             <Button
-              onClick={clearServiceCalls}
+              onClick={() => {
+                console.log('🧹 Clear button clicked')
+                clearServiceCalls()
+                console.log('🧹 Clear function called')
+              }}
               variant="outline"
               size="sm"
               className="border-red-400 text-red-400 bg-transparent"
             >
               Clear Service Calls
+            </Button>
+            <Button
+              onClick={() => {
+                console.log('🟢 Accept all button clicked')
+                acceptAllServiceCalls()
+              }}
+              variant="outline"
+              size="sm"
+              className="border-green-400 text-green-400 bg-transparent"
+            >
+              Accept All Calls
+            </Button>
+            <Button
+              onClick={() => {
+                const stats = localAlarmManager.getStats()
+                toast({
+                  title: "📊 Local Alarm Stats",
+                  description: `Total: ${stats.total}, Active: ${stats.active}, Acknowledged: ${stats.acknowledged}, Cleared: ${stats.cleared}`,
+                  variant: "default",
+                  duration: 7000,
+                })
+              }}
+              variant="outline"
+              size="sm"
+              className="border-cyan-400 text-cyan-400 bg-transparent"
+            >
+              Alarm Stats
             </Button>
             <NavigationMenu />
           </div>
@@ -607,7 +644,19 @@ export function LiveTrackingDashboard() {
                             {(() => {
                               const cnt = getServiceCount(wristband.wristbandId)
                               return cnt > 0 ? (
-                                <span className="ml-2 text-cyan-400">• Service calls: {cnt}</span>
+                                <div className="ml-2 flex items-center gap-2">
+                                  <span className="text-cyan-400">• Service calls: {cnt}</span>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      acceptServiceCall(wristband.wristbandId)
+                                    }}
+                                    className="text-xs px-2 py-1 bg-green-600 hover:bg-green-700 text-white rounded transition-colors"
+                                    title="Accept all calls for this wristband"
+                                  >
+                                    Accept
+                                  </button>
+                                </div>
                               ) : null
                             })()}
                           </CardDescription>
@@ -789,7 +838,19 @@ export function LiveTrackingDashboard() {
                             {(() => {
                               const cnt = getServiceCount(wristband.wristbandId)
                               return cnt > 0 ? (
-                                <span className="ml-2 text-cyan-400">• Service calls: {cnt}</span>
+                                <div className="ml-2 flex items-center gap-2">
+                                  <span className="text-cyan-400">• Service calls: {cnt}</span>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      acceptServiceCall(wristband.wristbandId)
+                                    }}
+                                    className="text-xs px-2 py-1 bg-green-600 hover:bg-green-700 text-white rounded transition-colors"
+                                    title="Accept all calls for this wristband"
+                                  >
+                                    Accept
+                                  </button>
+                                </div>
                               ) : null
                             })()}
                           </CardDescription>
@@ -971,7 +1032,19 @@ export function LiveTrackingDashboard() {
                             {(() => {
                               const cnt = getServiceCount(wristband.wristbandId)
                               return cnt > 0 ? (
-                                <span className="ml-2 text-cyan-400">• Service calls: {cnt}</span>
+                                <div className="ml-2 flex items-center gap-2">
+                                  <span className="text-cyan-400">• Service calls: {cnt}</span>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      acceptServiceCall(wristband.wristbandId)
+                                    }}
+                                    className="text-xs px-2 py-1 bg-green-600 hover:bg-green-700 text-white rounded transition-colors"
+                                    title="Accept all calls for this wristband"
+                                  >
+                                    Accept
+                                  </button>
+                                </div>
                               ) : null
                             })()}
                           </CardDescription>

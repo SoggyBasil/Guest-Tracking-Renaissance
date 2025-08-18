@@ -20,6 +20,19 @@ export async function GET(req: NextRequest) {
   const stream = new ReadableStream({
     start(controller) {
       console.log('🔴 SSE connection established for service calls')
+      let isControllerClosed = false
+      
+      // Helper function to safely enqueue data
+      const safeEnqueue = (data: Uint8Array) => {
+        try {
+          if (!isControllerClosed) {
+            controller.enqueue(data)
+          }
+        } catch (error) {
+          console.log('⚠️ Controller already closed, skipping enqueue')
+          isControllerClosed = true
+        }
+      }
       
       // Send initial connection message
       const initialMessage = `data: ${JSON.stringify({
@@ -27,14 +40,22 @@ export async function GET(req: NextRequest) {
         timestamp: new Date().toISOString(),
         message: 'Service calls live stream connected'
       })}\n\n`
-      controller.enqueue(encoder.encode(initialMessage))
+      safeEnqueue(encoder.encode(initialMessage))
 
       // Poll for real-time logs and alarm data
       const pollAndStream = async () => {
+        if (isControllerClosed) {
+          return
+        }
+        
         try {
           // Try to fetch real-time logs first
           let logData = null
           const logEndpoints = [
+            // Prioritize C28StewCall.log since that's where service calls are logged
+            'http://10.101.12.31/logs/C28StewCall.log',
+            'http://10.101.12.31/logs/application.log',
+            'http://10.101.12.31/logs/system.log',
             'http://10.101.12.31/logs/realtime',
             'http://10.101.12.31/api/logs/live',
             'http://10.101.12.31/realtime/logs',
@@ -43,9 +64,6 @@ export async function GET(req: NextRequest) {
             'http://10.101.12.31/logs/tail',
             'http://10.101.12.31/tail',
             'http://10.101.12.31/stream/logs',
-            'http://10.101.12.31/logs/application.log',
-            'http://10.101.12.31/logs/system.log',
-            'http://10.101.12.31/logs/C28StewCall.log',
             'http://10.101.12.31/log/current',
             'http://10.101.12.31/log/application.log',
             'http://10.101.12.31/var/log/application.log',
@@ -72,6 +90,12 @@ export async function GET(req: NextRequest) {
               if (logResponse.ok) {
                 logData = await logResponse.text()
                 console.log(`✅ Found working log endpoint: ${endpoint}`)
+                console.log(`📊 Log data length: ${logData.length} characters`)
+                console.log(`📊 Log data preview:`, logData.substring(0, 300) + '...')
+                
+                // Check if log contains C28StewCallInterface
+                const stewCallMatches = logData.match(/C28StewCallInterface/gi) || []
+                console.log(`🔍 Found ${stewCallMatches.length} C28StewCallInterface occurrences`)
                 
                 // Send the log data for parsing
                 const logMessage = `data: ${JSON.stringify({
@@ -81,10 +105,11 @@ export async function GET(req: NextRequest) {
                   source: endpoint
                 })}\n\n`
                 
-                controller.enqueue(encoder.encode(logMessage))
+                safeEnqueue(encoder.encode(logMessage))
                 break
               }
             } catch (logError) {
+              console.log(`❌ Log endpoint ${endpoint} failed:`, logError.message)
               // Continue to next endpoint
               continue
             }
@@ -110,7 +135,7 @@ export async function GET(req: NextRequest) {
                 data: xmlData
               })}\n\n`
               
-              controller.enqueue(encoder.encode(dataMessage))
+              safeEnqueue(encoder.encode(dataMessage))
               
               if (debug) {
                 console.log('📡 Streamed alarm data via SSE (fallback)')
@@ -129,7 +154,7 @@ export async function GET(req: NextRequest) {
             timestamp: new Date().toISOString(),
             message: `Polling error: ${error instanceof Error ? error.message : 'Unknown error'}`
           })}\n\n`
-          controller.enqueue(encoder.encode(errorMessage))
+          safeEnqueue(encoder.encode(errorMessage))
         }
       }
 
@@ -137,23 +162,40 @@ export async function GET(req: NextRequest) {
       pollAndStream()
 
       // Set up interval for aggressive polling (every 2 seconds for real-time)
-      const pollInterval = setInterval(pollAndStream, 2000)
+      const pollInterval = setInterval(() => {
+        if (isControllerClosed) {
+          clearInterval(pollInterval)
+          return
+        }
+        pollAndStream()
+      }, 2000)
 
       // Keep connection alive with heartbeat
       const heartbeatInterval = setInterval(() => {
+        if (isControllerClosed) {
+          clearInterval(heartbeatInterval)
+          return
+        }
+        
         const heartbeat = `data: ${JSON.stringify({
           type: 'heartbeat',
           timestamp: new Date().toISOString()
         })}\n\n`
-        controller.enqueue(encoder.encode(heartbeat))
+        safeEnqueue(encoder.encode(heartbeat))
       }, 10000) // Heartbeat every 10 seconds
 
       // Clean up on close
       req.signal?.addEventListener('abort', () => {
         console.log('🔴 SSE connection closed for service calls')
+        isControllerClosed = true
         clearInterval(pollInterval)
         clearInterval(heartbeatInterval)
-        controller.close()
+        try {
+          controller.close()
+        } catch (error) {
+          // Controller might already be closed
+          console.log('⚠️ Controller was already closed')
+        }
       })
     }
   })

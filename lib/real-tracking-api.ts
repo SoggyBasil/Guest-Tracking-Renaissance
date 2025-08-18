@@ -5,6 +5,9 @@ import { useState, useEffect, useCallback } from "react"
 // Real tracking API endpoint
 const TRACKING_API_ENDPOINT = "http://myyachtservices.itwservices.local:8020"
 
+// Configuration for device visibility
+const MAX_OFFLINE_TIME_MINUTES = 10 // Hide devices offline longer than this many minutes
+
 // Real wristband data from API
 export interface WristbandData {
   id: string
@@ -52,7 +55,8 @@ class RealTrackingSystem {
     const endpoint = '/Track/GetItems/'
     
     try {
-      console.log(`🔍 Trying endpoint: ${TRACKING_API_ENDPOINT}${endpoint}`)
+      console.log(`🔍 Fetching wristband data from: ${TRACKING_API_ENDPOINT}${endpoint}`)
+      console.log(`📊 Current internal state: ${this.signalLevels.size} signal entries, ${this.rawApiResponses.size} response entries, ${this.deviceStatus.size} status entries`)
       
       const response = await fetch(`${TRACKING_API_ENDPOINT}${endpoint}`, {
         method: 'POST', // The tracking engine uses POST
@@ -63,8 +67,7 @@ class RealTrackingSystem {
 
       if (response.ok) {
         const data = await response.json()
-        console.log(`✅ Success! Found working endpoint: ${endpoint}`)
-        console.log("📡 Received data from API:", data)
+        console.log(`✅ API fetch successful - ${data?.Tracks?.length || 0} tracks received`)
         
         // Transform API data to match our interface
         return this.transformApiData(data)
@@ -82,18 +85,14 @@ class RealTrackingSystem {
   private transformApiData(apiData: any): WristbandData[] {
     // Transform the API response to match our WristbandData interface
     // Based on the tracking engine code, the API returns { Tracks: [...] }
-    console.log("🔄 Transforming API data:", apiData)
-    
-    // Debug: check for G2 507 in raw data
-    if (apiData && apiData.Tracks) {
-      const g2507 = apiData.Tracks.find((track: any) => track.Name === 'G2 507')
-      if (g2507) {
-        console.log("🔍 Raw G2 507 data from API:", g2507)
-      }
+    // Reduced API data logging - only log when tracks change significantly
+    const trackCount = apiData?.Tracks?.length || 0
+    if (trackCount === 0 || trackCount % 10 === 0) { // Log every 10th update or when no tracks
+      console.log(`🔄 API data: ${trackCount} tracks`)
     }
     
     if (apiData && apiData.Tracks && Array.isArray(apiData.Tracks)) {
-      return apiData.Tracks.map((track: any) => {
+      const transformedTracks = apiData.Tracks.map((track: any) => {
         const wristbandId = track.Name || 'Unknown'
         const location = track.Room || track.Message || 'Unknown Location'
         const signalStrength = track.Value || 0
@@ -107,30 +106,26 @@ class RealTrackingSystem {
         // Update signal level tracking for this device
         this.updateSignalLevel(wristbandId, signalStrength)
         
-        // Check if offline (signal 0, location UNKNOWN, or API response hasn't changed in 1 minute)
+        // Check if offline - prioritize immediate API data over timeout logic
         const isOfflineBySignal = signalStrength === 0 || location.toLowerCase().includes('unknown')
         const isOfflineByTimeout = this.isApiResponseStale(wristbandId)
-        const isOffline = isOfflineBySignal || isOfflineByTimeout
+        
+        // For fresh page loads, trust the API data first. Only use timeout for established connections.
+        const hasEstablishedHistory = this.signalLevels.has(wristbandId) && this.rawApiResponses.has(wristbandId)
+        const isOffline = isOfflineBySignal || (hasEstablishedHistory && isOfflineByTimeout)
+        
+        // Debug logging for offline detection
+        if (wristbandId === 'G2 507' || wristbandId.includes('P1')) {
+          console.log(`🔍 ${wristbandId} offline check: signal=${signalStrength}, location="${location}", bySignal=${isOfflineBySignal}, byTimeout=${isOfflineByTimeout}, hasHistory=${hasEstablishedHistory}, final=${isOffline}`)
+        }
 
         // Track device status changes for notifications
         this.updateDeviceStatus(wristbandId, isOffline)
         
         // Debug logging for G2 507 specifically
-        if (wristbandId === 'G2 507') {
-          const signalInfo = this.getSignalInfo(wristbandId)
-          console.log(`🔍 DEBUG G2 507:`, {
-            currentSignal: signalStrength,
-            location: location,
-            isOfflineBySignal,
-            isOfflineByTimeout,
-            isOffline,
-            signalInfo: signalInfo ? {
-              value: signalInfo.value,
-              lastChanged: new Date(signalInfo.lastChanged).toLocaleTimeString(),
-              lastSeen: new Date(signalInfo.lastSeen).toLocaleTimeString(),
-              timeSinceChange: Math.round((Date.now() - signalInfo.lastChanged) / 1000)
-            } : 'none'
-          })
+        // Reduced debug logging - only for critical status changes
+        if (wristbandId === 'G2 507' && (isOffline || signalStrength === 0)) {
+          console.log(`🔍 G2 507: ${isOffline ? 'offline' : 'online'}, signal: ${signalStrength}`)
         }
         
         // Check if on the move (location changed)
@@ -181,6 +176,39 @@ class RealTrackingSystem {
           group: group, // Add group information
         }
       })
+
+      // Filter out devices that have been offline for too long
+      // This prevents showing devices that haven't been seen in a very long time
+      const now = Date.now()
+      const maxOfflineTime = MAX_OFFLINE_TIME_MINUTES * 60 * 1000
+      
+      const filteredTracks = transformedTracks.filter((device: WristbandData) => {
+        if (device.status === 'active') {
+          // Always show active devices
+          return true
+        }
+        
+        // For offline devices, check their last seen time
+        try {
+          const lastSeenTime = new Date(device.lastSeen).getTime()
+          const timeSinceLastSeen = now - lastSeenTime
+          
+          // If device hasn't been seen for more than maxOfflineTime, hide it
+          if (timeSinceLastSeen > maxOfflineTime) {
+            console.log(`🚫 Hiding ${device.wristbandId} - last seen ${Math.round(timeSinceLastSeen / (60 * 1000))} minutes ago (threshold: ${MAX_OFFLINE_TIME_MINUTES}min)`)
+            return false
+          }
+        } catch (error) {
+          // If we can't parse the lastSeen time, show the device (safer default)
+          console.warn(`⚠️ Could not parse lastSeen time for ${device.wristbandId}: ${device.lastSeen}`)
+        }
+        
+        // Show device if it's recently offline
+        return true
+      })
+      
+      console.log(`📊 Filtered devices: ${transformedTracks.length} → ${filteredTracks.length} (${transformedTracks.length - filteredTracks.length} hidden due to long offline)`)
+      return filteredTracks
     }
     
     // If API returns a different structure, handle it here
@@ -244,8 +272,10 @@ class RealTrackingSystem {
     const existing = this.signalLevels.get(wristbandId)
     
     if (!existing) {
-      // First time seeing this device
-      console.log(`🆕 First time tracking ${wristbandId} with signal ${signalValue}`)
+      // First time seeing this device - only log for important devices
+      if (wristbandId.includes('G2') || wristbandId.includes('P1')) {
+        console.log(`🆕 First time tracking ${wristbandId}`)
+      }
       this.signalLevels.set(wristbandId, {
         value: signalValue,
         lastChanged: now,
@@ -257,20 +287,19 @@ class RealTrackingSystem {
       
       // Check if signal level actually changed
       if (existing.value !== signalValue) {
-        console.log(`📶 Signal changed for ${wristbandId}: ${existing.value} → ${signalValue}`)
+        // Only log significant signal changes
+        if (Math.abs(existing.value - signalValue) > 10 || signalValue === 0) {
+          console.log(`📶 ${wristbandId}: ${existing.value} → ${signalValue}`)
+        }
         existing.value = signalValue
         existing.lastChanged = now
       } else {
-        // Signal level unchanged
+        // Signal level unchanged - reduce logging frequency
         const timeSinceChange = now - existing.lastChanged
         
-        // Log every 30 seconds for debugging, especially for G2 507
-        if (wristbandId === 'G2 507' || timeSinceChange % 30000 < 5000) { // Log roughly every 30s
-          console.log(`🔄 ${wristbandId} signal unchanged: ${signalValue} for ${Math.round(timeSinceChange/1000)}s`)
-        }
-        
-        if (timeSinceChange > 45000) { // 45 seconds - warn before 1min timeout
-          console.log(`⚠️ ${wristbandId} signal unchanged for ${Math.round(timeSinceChange/1000)}s (timeout in ${60 - Math.round(timeSinceChange/1000)}s)`)
+        // Only log timeout warnings for critical devices near timeout
+        if (timeSinceChange > 50000 && (wristbandId === 'G2 507' || wristbandId.includes('P1'))) {
+          console.log(`⚠️ ${wristbandId} signal timeout warning: ${Math.round(timeSinceChange/1000)}s`)
         }
       }
       
@@ -284,12 +313,13 @@ class RealTrackingSystem {
     
     const now = Date.now()
     const timeSinceSignalChanged = now - signalInfo.lastChanged
-    const timeoutThreshold = 1 * 60 * 1000 // 1 minute timeout as requested
+    const timeoutThreshold = 2 * 60 * 1000 // 2 minute timeout as requested
     
     const isTimedOut = timeSinceSignalChanged > timeoutThreshold
     
-    if (isTimedOut) {
-      console.log(`⏰ Device ${wristbandId} timed out - signal hasn't changed for ${Math.round(timeSinceSignalChanged/1000)}s`)
+    // Only log timeouts for important devices
+    if (isTimedOut && (wristbandId === 'G2 507' || wristbandId.includes('P1'))) {
+      console.log(`⏰ ${wristbandId} timed out`)
     }
     
     return isTimedOut
@@ -336,16 +366,20 @@ class RealTrackingSystem {
 
   private isApiResponseStale(wristbandId: string): boolean {
     const apiResponse = this.rawApiResponses.get(wristbandId)
-    if (!apiResponse) return false
+    if (!apiResponse) {
+      // No previous response - this is fresh data, not stale
+      return false
+    }
     
     const now = Date.now()
     const timeSinceApiChanged = now - apiResponse.timestamp
-    const timeoutThreshold = 1 * 60 * 1000 // 1 minute timeout
+    const timeoutThreshold = 2 * 60 * 1000 // 2 minute timeout
     
     const isStale = timeSinceApiChanged > timeoutThreshold
     
-    if (isStale && wristbandId === 'G2 507') {
-      console.log(`⏰ G2 507 API response stale - unchanged for ${Math.round(timeSinceApiChanged/1000)}s`)
+    // Enhanced logging for debugging
+    if (isStale && (wristbandId === 'G2 507' || wristbandId.includes('P1'))) {
+      console.log(`⏰ ${wristbandId} API response stale - unchanged for ${Math.round(timeSinceApiChanged/1000)}s (threshold: ${timeoutThreshold/1000}s)`)
     }
     
     return isStale
@@ -486,13 +520,22 @@ class RealTrackingSystem {
     this.isRunning = true
     console.log("🟢 Real tracking system started")
     
+    // CRITICAL: Reset all tracking state to avoid stale data from previous sessions
+    console.log("🧹 Clearing tracking state to ensure fresh offline detection")
+    this.signalLevels.clear()
+    this.rawApiResponses.clear()
+    this.deviceStatus.clear()
+    this.previousLocations.clear()
+    this.movementStartTimes.clear()
+    this.currentData = []
+    
     // Initial fetch
     await this.updateData()
     
-    // Set up polling interval (every 5 seconds)
+    // Set up polling interval (every 2 minutes as requested)
     this.intervalId = setInterval(() => {
       this.updateData()
-    }, 5000)
+    }, 120000) // 2 minutes = 120,000ms
   }
 
   async stop() {
